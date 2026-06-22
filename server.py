@@ -6,14 +6,23 @@ import pytz
 app = FastAPI()
 
 # ==============================
-# 🔧 SAFE REQUEST HANDLER
+# 🔧 SAFE REQUEST HELPERS
 # ==============================
 
 def safe_get_json(url):
     try:
         res = requests.get(url, timeout=8)
-        res.raise_for_status()
+
+        if res.status_code != 200:
+            print("❌ Bad status:", res.status_code)
+            return None
+
+        if not res.text.strip():
+            print("❌ Empty response")
+            return None
+
         return res.json()
+
     except Exception as e:
         print("❌ JSON API Error:", e)
         return None
@@ -22,8 +31,13 @@ def safe_get_json(url):
 def safe_get_text(url):
     try:
         res = requests.get(url, timeout=8)
-        res.raise_for_status()
+
+        if res.status_code != 200:
+            print("❌ Text API status:", res.status_code)
+            return None
+
         return res.text
+
     except Exception as e:
         print("❌ TEXT API Error:", e)
         return None
@@ -94,7 +108,7 @@ def get_time(timezone):
 
 
 # ==============================
-# 🎉 HOLIDAY (SAFE)
+# 🎉 HOLIDAY
 # ==============================
 
 def get_today_holiday(country_code="IN"):
@@ -113,27 +127,35 @@ def get_today_holiday(country_code="IN"):
                 return holiday.get("localName")
 
         return None
+
     except Exception as e:
         print("❌ Holiday error:", e)
         return None
 
 
 # ==============================
-# 📚 FACT (SAFE HTTPS)
+# 📚 FACT (FIXED)
 # ==============================
 
 def get_today_fact():
     try:
         today = datetime.utcnow()
-        url = f"https://numbersapi.com/{today.month}/{today.day}/date"
-        return safe_get_text(url)
+        url = f"http://numbersapi.com/{today.month}/{today.day}/date"
+
+        res = requests.get(url, timeout=8)
+
+        if res.status_code != 200:
+            return None
+
+        return res.text
+
     except Exception as e:
         print("❌ Fact error:", e)
         return None
 
 
 # ==============================
-# 🧠 TOOL HANDLER
+# 🧠 MCP TOOL HANDLER
 # ==============================
 
 @app.post("/tool")
@@ -143,16 +165,26 @@ def tool_handler(payload: dict):
     tool = payload.get("tool")
     city = payload.get("input")
 
+    # ==============================
     # ❤️ HEALTH CHECK
+    # ==============================
+
     if tool == "healthCheck":
         return {
             "status": "ok",
             "server": "MCP running",
-            "version": "V4-STABLE"
+            "version": "V5-FINAL"
         }
 
-    # 🌍 Get coordinates
+    # ==============================
+    # 🚫 VALIDATION
+    # ==============================
+
+    if not city:
+        return {"error": "No city provided"}
+
     coord = get_coordinates(city)
+
     if not coord:
         return {"error": "City not found"}
 
@@ -160,35 +192,35 @@ def tool_handler(payload: dict):
     lon = coord["longitude"]
 
     # ==============================
-    # 🔥 FULL INSIGHTS
+    # 🔥 FULL INSIGHTS (MAIN TOOL)
     # ==============================
 
     if tool == "getFullInsights":
 
         result = {
-            "source": "MCP_SERVER_V4",
+            "source": "MCP_SERVER_V5",
             "city": coord["city"],
             "country": coord["country"],
             "latitude": lat,
             "longitude": lon
         }
 
-        # Weather
+        # 🌡 Weather
         weather = get_weather(lat, lon)
         if weather:
             result["weather"] = weather
 
-        # AQI
+        # 🌫 AQI
         aqi = get_aqi(lat, lon)
         if aqi:
             result["aqi"] = aqi
 
-        # Time
+        # 🕒 Time
         current_time = get_time(coord["timezone"])
         if current_time:
             result["current_time"] = current_time
 
-        # Special
+        # 🎉 Special
         special = {}
 
         holiday = get_today_holiday("IN")
