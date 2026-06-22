@@ -1,45 +1,79 @@
-from fastapi import FastAPI
-import requests
+from fastapi import FastAPI, Request
+import httpx
+import asyncio
 from datetime import datetime
 import pytz
+import logging
+import json
 
 app = FastAPI()
 
 # ==============================
-# 🔧 SAFE REQUEST HELPERS
+# 🪵 LOGGING CONFIG
 # ==============================
 
-def safe_get_json(url):
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+logger = logging.getLogger("MCP_SERVER")
+
+# Shared async client (IMPORTANT for performance)
+client = httpx.AsyncClient(timeout=10)
+
+
+# ==============================
+# 🔧 SAFE ASYNC REQUEST HELPERS
+# ==============================
+
+async def safe_get_json(url):
+    logger.info(f"➡️ GET JSON: {url}")
+
     try:
-        res = requests.get(url, timeout=8)
+        res = await client.get(url)
+
+        logger.info(f"⬅️ Status: {res.status_code}")
 
         if res.status_code != 200:
-            print("❌ Bad status:", res.status_code)
+            logger.error(f"❌ Bad status: {res.status_code}")
             return None
 
         if not res.text.strip():
-            print("❌ Empty response")
+            logger.error("❌ Empty response")
             return None
 
         return res.json()
 
+    except httpx.ReadTimeout:
+        logger.error("⏳ Timeout")
+        return None
+
     except Exception as e:
-        print("❌ JSON API Error:", e)
+        logger.exception(f"❌ JSON Error: {e}")
         return None
 
 
-def safe_get_text(url):
+async def safe_get_text(url):
+    logger.info(f"➡️ GET TEXT: {url}")
+
     try:
-        res = requests.get(url, timeout=8)
+        res = await client.get(url)
+
+        logger.info(f"⬅️ Status: {res.status_code}")
 
         if res.status_code != 200:
-            print("❌ Text API status:", res.status_code)
+            logger.error(f"❌ Text status: {res.status_code}")
             return None
 
         return res.text
 
+    except httpx.ReadTimeout:
+        logger.error("⏳ Text timeout")
+        return None
+
     except Exception as e:
-        print("❌ TEXT API Error:", e)
+        logger.exception(f"❌ TEXT Error: {e}")
         return None
 
 
@@ -47,11 +81,14 @@ def safe_get_text(url):
 # 🌍 COORDINATES
 # ==============================
 
-def get_coordinates(city):
+async def get_coordinates(city):
+    logger.info(f"🌍 Fetching coordinates: {city}")
+
     url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}"
-    res = safe_get_json(url)
+    res = await safe_get_json(url)
 
     if not res or "results" not in res or not res["results"]:
+        logger.error("❌ City not found")
         return None
 
     data = res["results"][0]
@@ -69,41 +106,32 @@ def get_coordinates(city):
 # 🌡 WEATHER
 # ==============================
 
-def get_weather(lat, lon):
+async def get_weather(lat, lon):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
-    res = safe_get_json(url)
-
-    if not res:
-        return None
-
-    return res.get("current_weather")
+    res = await safe_get_json(url)
+    return res.get("current_weather") if res else None
 
 
 # ==============================
 # 🌫 AQI
 # ==============================
 
-def get_aqi(lat, lon):
+async def get_aqi(lat, lon):
     url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=pm10,pm2_5,us_aqi"
-    res = safe_get_json(url)
-
-    if not res:
-        return None
-
-    return res.get("current")
+    res = await safe_get_json(url)
+    return res.get("current") if res else None
 
 
 # ==============================
-# 🕒 TIME
+# 🕒 TIME (sync is fine)
 # ==============================
 
 def get_time(timezone):
     try:
         tz = pytz.timezone(timezone)
-        dt = datetime.now(tz)
-        return dt.strftime("%d %B %Y, %I:%M %p")
+        return datetime.now(tz).strftime("%d %B %Y, %I:%M %p")
     except Exception as e:
-        print("❌ Time error:", e)
+        logger.exception(f"❌ Time error: {e}")
         return None
 
 
@@ -111,133 +139,112 @@ def get_time(timezone):
 # 🎉 HOLIDAY
 # ==============================
 
-def get_today_holiday(country_code="IN"):
-    try:
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        year = today[:4]
+async def get_today_holiday(country_code="IN"):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    year = today[:4]
 
-        url = f"https://date.nager.at/api/v3/PublicHolidays/{year}/{country_code}"
-        res = safe_get_json(url)
+    url = f"https://date.nager.at/api/v3/PublicHolidays/{year}/{country_code}"
+    res = await safe_get_json(url)
 
-        if not res:
-            return None
-
-        for holiday in res:
-            if holiday.get("date") == today:
-                return holiday.get("localName")
-
+    if not res:
         return None
 
-    except Exception as e:
-        print("❌ Holiday error:", e)
-        return None
+    for holiday in res:
+        if holiday.get("date") == today:
+            return holiday.get("localName")
+
+    return None
 
 
 # ==============================
-# 📚 FACT (FIXED)
+# 📚 FACT
 # ==============================
 
-def get_today_fact():
-    try:
-        today = datetime.utcnow()
-        url = f"http://numbersapi.com/{today.month}/{today.day}/date"
-
-        res = requests.get(url, timeout=8)
-
-        if res.status_code != 200:
-            return None
-
-        return res.text
-
-    except Exception as e:
-        print("❌ Fact error:", e)
-        return None
+async def get_today_fact():
+    today = datetime.utcnow()
+    url = f"http://numbersapi.com/{today.month}/{today.day}/date"
+    return await safe_get_text(url)
 
 
 # ==============================
-# 🧠 MCP TOOL HANDLER
+# 🧠 TOOL HANDLER
 # ==============================
 
 @app.post("/tool")
-def tool_handler(payload: dict):
-    print("🔥 MCP SERVER HIT:", payload)
+async def tool_handler(request: Request):
+    try:
+        payload = await request.json()
 
-    tool = payload.get("tool")
-    city = payload.get("input")
+        logger.info("🔥 MCP SERVER HIT")
+        logger.info(json.dumps(payload, indent=2))
 
-    # ==============================
-    # ❤️ HEALTH CHECK
-    # ==============================
+        tool = payload.get("tool")
+        city = payload.get("input")
 
-    if tool == "healthCheck":
-        return {
-            "status": "ok",
-            "server": "MCP running",
-            "version": "V5-FINAL"
-        }
+        # ❤️ HEALTH CHECK
+        if tool == "healthCheck":
+            return {
+                "status": "ok",
+                "server": "MCP ASYNC RUNNING",
+                "version": "V7-ASYNC"
+            }
 
-    # ==============================
-    # 🚫 VALIDATION
-    # ==============================
+        if not city:
+            return {"error": "No city provided"}
 
-    if not city:
-        return {"error": "No city provided"}
+        coord = await get_coordinates(city)
 
-    coord = get_coordinates(city)
+        if not coord:
+            return {"error": "City not found"}
 
-    if not coord:
-        return {"error": "City not found"}
+        lat = coord["latitude"]
+        lon = coord["longitude"]
 
-    lat = coord["latitude"]
-    lon = coord["longitude"]
+        # 🚀 PARALLEL EXECUTION (KEY BOOST)
+        weather_task = get_weather(lat, lon)
+        aqi_task = get_aqi(lat, lon)
+        holiday_task = get_today_holiday("IN")
+        fact_task = get_today_fact()
 
-    # ==============================
-    # 🔥 FULL INSIGHTS (MAIN TOOL)
-    # ==============================
-
-    if tool == "getFullInsights":
+        weather, aqi, holiday, fact = await asyncio.gather(
+            weather_task,
+            aqi_task,
+            holiday_task,
+            fact_task
+        )
 
         result = {
-            "source": "MCP_SERVER_V5",
+            "source": "MCP_SERVER_V7_ASYNC",
             "city": coord["city"],
             "country": coord["country"],
             "latitude": lat,
             "longitude": lon
         }
 
-        # 🌡 Weather
-        weather = get_weather(lat, lon)
         if weather:
             result["weather"] = weather
 
-        # 🌫 AQI
-        aqi = get_aqi(lat, lon)
         if aqi:
             result["aqi"] = aqi
 
-        # 🕒 Time
         current_time = get_time(coord["timezone"])
         if current_time:
             result["current_time"] = current_time
 
-        # 🎉 Special
         special = {}
-
-        holiday = get_today_holiday("IN")
         if holiday:
             special["holiday"] = holiday
-
-        fact = get_today_fact()
         if fact:
             special["fact"] = fact
 
         if special:
             result["today_special"] = special
 
+        logger.info("✅ Final Response:")
+        logger.info(json.dumps(result, indent=2))
+
         return result
 
-    # ==============================
-    # ❌ UNKNOWN TOOL
-    # ==============================
-
-    return {"error": f"Unknown tool: {tool}"}
+    except Exception as e:
+        logger.exception(f"💥 CRITICAL ERROR: {e}")
+        return {"error": "Internal server error"}
