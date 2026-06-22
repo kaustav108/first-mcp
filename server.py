@@ -6,61 +6,83 @@ import pytz
 app = FastAPI()
 
 # ==============================
-# 🔧 HELPER FUNCTIONS
+# 🔧 SAFE REQUEST HANDLER
 # ==============================
 
-def safe_get(url):
+def safe_get_json(url):
     try:
-        res = requests.get(url, timeout=10)
+        res = requests.get(url, timeout=8)
         res.raise_for_status()
         return res.json()
     except Exception as e:
-        print("❌ API Error:", e)
+        print("❌ JSON API Error:", e)
         return None
 
 
-# 🌍 Get coordinates
+def safe_get_text(url):
+    try:
+        res = requests.get(url, timeout=8)
+        res.raise_for_status()
+        return res.text
+    except Exception as e:
+        print("❌ TEXT API Error:", e)
+        return None
+
+
+# ==============================
+# 🌍 COORDINATES
+# ==============================
+
 def get_coordinates(city):
     url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}"
-    res = safe_get(url)
+    res = safe_get_json(url)
 
-    if not res or "results" not in res:
+    if not res or "results" not in res or not res["results"]:
         return None
 
     data = res["results"][0]
 
     return {
-        "city": data["name"],
-        "country": data["country"],
-        "latitude": data["latitude"],
-        "longitude": data["longitude"],
-        "timezone": data["timezone"]
+        "city": data.get("name"),
+        "country": data.get("country"),
+        "latitude": data.get("latitude"),
+        "longitude": data.get("longitude"),
+        "timezone": data.get("timezone")
     }
 
 
-# 🌡 Weather
+# ==============================
+# 🌡 WEATHER
+# ==============================
+
 def get_weather(lat, lon):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
-    res = safe_get(url)
+    res = safe_get_json(url)
 
     if not res:
-        return {}
+        return None
 
-    return res.get("current_weather", {})
+    return res.get("current_weather")
 
 
+# ==============================
 # 🌫 AQI
+# ==============================
+
 def get_aqi(lat, lon):
     url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=pm10,pm2_5,us_aqi"
-    res = safe_get(url)
+    res = safe_get_json(url)
 
     if not res:
-        return {}
+        return None
 
-    return res.get("current", {})
+    return res.get("current")
 
 
-# 🕒 Time (formatted)
+# ==============================
+# 🕒 TIME
+# ==============================
+
 def get_time(timezone):
     try:
         tz = pytz.timezone(timezone)
@@ -68,41 +90,50 @@ def get_time(timezone):
         return dt.strftime("%d %B %Y, %I:%M %p")
     except Exception as e:
         print("❌ Time error:", e)
-        return "Timezone error"
+        return None
 
 
-# 🎉 Holiday
+# ==============================
+# 🎉 HOLIDAY (SAFE)
+# ==============================
+
 def get_today_holiday(country_code="IN"):
     try:
         today = datetime.utcnow().strftime("%Y-%m-%d")
         year = today[:4]
 
         url = f"https://date.nager.at/api/v3/PublicHolidays/{year}/{country_code}"
-        res = requests.get(url, timeout=10).json()
+        res = safe_get_json(url)
+
+        if not res:
+            return None
 
         for holiday in res:
-            if holiday["date"] == today:
-                return holiday["localName"]
+            if holiday.get("date") == today:
+                return holiday.get("localName")
 
-        return "No major holiday today"
+        return None
     except Exception as e:
         print("❌ Holiday error:", e)
-        return "Unavailable"
-
-
-# 📚 Fact
-def get_today_fact():
-    try:
-        today = datetime.utcnow()
-        url = f"http://numbersapi.com/{today.month}/{today.day}/date"
-        return requests.get(url, timeout=10).text
-    except Exception as e:
-        print("❌ Fact error:", e)
-        return "No fact available"
+        return None
 
 
 # ==============================
-# 🧠 MCP TOOL HANDLER
+# 📚 FACT (SAFE HTTPS)
+# ==============================
+
+def get_today_fact():
+    try:
+        today = datetime.utcnow()
+        url = f"https://numbersapi.com/{today.month}/{today.day}/date"
+        return safe_get_text(url)
+    except Exception as e:
+        print("❌ Fact error:", e)
+        return None
+
+
+# ==============================
+# 🧠 TOOL HANDLER
 # ==============================
 
 @app.post("/tool")
@@ -112,132 +143,69 @@ def tool_handler(payload: dict):
     tool = payload.get("tool")
     city = payload.get("input")
 
-    # ==============================
     # ❤️ HEALTH CHECK
-    # ==============================
     if tool == "healthCheck":
         return {
             "status": "ok",
             "server": "MCP running",
-            "version": "V3"
+            "version": "V4-STABLE"
         }
 
-    # ==============================
-    # VALIDATE CITY FOR CITY TOOLS
-    # ==============================
-    if tool != "healthCheck":
-        coord = get_coordinates(city)
-        if not coord:
-            return {"error": "City not found"}
+    # 🌍 Get coordinates
+    coord = get_coordinates(city)
+    if not coord:
+        return {"error": "City not found"}
+
+    lat = coord["latitude"]
+    lon = coord["longitude"]
 
     # ==============================
-    # 🌍 FULL CITY INFO
+    # 🔥 FULL INSIGHTS
     # ==============================
-    if tool == "getCityInfo":
 
-        weather = get_weather(coord["latitude"], coord["longitude"])
-        current_time = get_time(coord["timezone"])
+    if tool == "getFullInsights":
 
-        return {
-            "source": "MCP_SERVER_V3",
-            **coord,
-            "weather": weather,
-            "current_time": current_time
-        }
-
-    # ==============================
-    # 🌡 WEATHER ONLY
-    # ==============================
-    elif tool == "getWeatherOnly":
-
-        weather = get_weather(coord["latitude"], coord["longitude"])
-
-        return {
-            "source": "MCP_SERVER_V3",
-            "city": coord["city"],
-            "weather": weather
-        }
-
-    # ==============================
-    # 🕒 TIME ONLY
-    # ==============================
-    elif tool == "getTimeOnly":
-
-        current_time = get_time(coord["timezone"])
-
-        return {
-            "source": "MCP_SERVER_V3",
-            "city": coord["city"],
-            "current_time": current_time
-        }
-
-    # ==============================
-    # 📍 COORDINATES ONLY
-    # ==============================
-    elif tool == "getCoordinatesOnly":
-
-        return {
-            "source": "MCP_SERVER_V3",
-            **coord
-        }
-
-    # ==============================
-    # 🌫 AQI ONLY
-    # ==============================
-    elif tool == "getAQI":
-
-        aqi = get_aqi(coord["latitude"], coord["longitude"])
-
-        return {
-            "source": "MCP_SERVER_V3",
-            "city": coord["city"],
-            "aqi": aqi
-        }
-
-    # ==============================
-    # 🎉 TODAY SPECIAL
-    # ==============================
-    elif tool == "getTodaySpecial":
-
-        holiday = get_today_holiday("IN")
-        fact = get_today_fact()
-
-        return {
-            "source": "MCP_SERVER_V3",
-            "city": coord["city"],
-            "today_special": {
-                "holiday": holiday,
-                "fact": fact
-            }
-        }
-
-    # ==============================
-    # 🔥 FULL INSIGHTS (BEST TOOL)
-    # ==============================
-    elif tool == "getFullInsights":
-
-        weather = get_weather(coord["latitude"], coord["longitude"])
-        current_time = get_time(coord["timezone"])
-        aqi = get_aqi(coord["latitude"], coord["longitude"])
-        holiday = get_today_holiday("IN")
-        fact = get_today_fact()
-
-        return {
-            "source": "MCP_SERVER_V3",
+        result = {
+            "source": "MCP_SERVER_V4",
             "city": coord["city"],
             "country": coord["country"],
-            "latitude": coord["latitude"],
-            "longitude": coord["longitude"],
-            "weather": weather,
-            "aqi": aqi,
-            "current_time": current_time,
-            "today_special": {
-                "holiday": holiday,
-                "fact": fact
-            }
+            "latitude": lat,
+            "longitude": lon
         }
+
+        # Weather
+        weather = get_weather(lat, lon)
+        if weather:
+            result["weather"] = weather
+
+        # AQI
+        aqi = get_aqi(lat, lon)
+        if aqi:
+            result["aqi"] = aqi
+
+        # Time
+        current_time = get_time(coord["timezone"])
+        if current_time:
+            result["current_time"] = current_time
+
+        # Special
+        special = {}
+
+        holiday = get_today_holiday("IN")
+        if holiday:
+            special["holiday"] = holiday
+
+        fact = get_today_fact()
+        if fact:
+            special["fact"] = fact
+
+        if special:
+            result["today_special"] = special
+
+        return result
 
     # ==============================
     # ❌ UNKNOWN TOOL
     # ==============================
+
     return {"error": f"Unknown tool: {tool}"}
