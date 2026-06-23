@@ -5,6 +5,7 @@ from datetime import datetime
 import pytz
 import logging
 import json
+import os
 
 app = FastAPI()
 
@@ -164,6 +165,52 @@ async def get_today_fact():
     today = datetime.utcnow()
     url = f"http://numbersapi.com/{today.month}/{today.day}/date"
     return await safe_get_text(url)
+
+
+# ==============================
+# ♻️ KEEP-ALIVE (Self-ping to prevent Render sleep)
+# ==============================
+
+SELF_URL = os.environ.get("SELF_URL", "https://mcp-weather-s1s0.onrender.com/tool")
+KEEP_ALIVE_INTERVAL = 540  # 9 minutes (in seconds)
+
+async def keep_alive_loop():
+    """
+    Background task that pings this server every 9 minutes
+    to prevent Render.com from spinning down the free tier instance.
+    """
+    logger.info(f"♻️ Keep-alive started — pinging {SELF_URL} every {KEEP_ALIVE_INTERVAL // 60} minutes")
+    
+    # Wait a bit on first startup so the server is fully ready
+    await asyncio.sleep(30)
+    
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=15) as ping_client:
+                response = await ping_client.post(
+                    SELF_URL,
+                    json={"tool": "healthCheck"},
+                    headers={"Content-Type": "application/json"}
+                )
+                
+                if response.status_code == 200:
+                    logger.info("♻️ Keep-alive ping successful — server is awake")
+                else:
+                    logger.warning(f"♻️ Keep-alive ping returned status {response.status_code}")
+                    
+        except Exception as e:
+            logger.warning(f"♻️ Keep-alive ping failed: {e}")
+        
+        await asyncio.sleep(KEEP_ALIVE_INTERVAL)
+
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Start the keep-alive background task when the server boots up.
+    """
+    asyncio.create_task(keep_alive_loop())
+    logger.info("🚀 MCP Server startup complete — keep-alive task registered")
 
 
 # ==============================
